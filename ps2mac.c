@@ -2,12 +2,9 @@
  * ps2mac.c
  *
  *  This program is the interface code for AVR with a PS2 keyboard.
- *  It implements a PS2 keyboard interface and a Mac Plus serial keyb0ard interface.
+ *  It implements a PS2 keyboard interface and a Mac Plus serial keyboard interface.
  *  The code configures the keyboard, accepts scan codes, converts the AT scan codes
  *  to make/break codes for the Mac.
- *
- *  The SPI interface is used for communicating keyboard ASCII codes
- *  and for in-circuit programming of the AVR device.
  *
  * +-----+            +-----+            +----------+
  * |     |            |     |            |          |
@@ -24,14 +21,14 @@
  *
  * ATtiny85 AVR IO
  *
- * | Function  | AVR  | Pin | I/O                |
- * |-----------|------|-----|--------------------|
- * | Reset     | PB5  | 1   | Pull up            |
- * | PS2 clock | PB3  | 2   | in/out             |
- * | PS2 data  | PB4  | 3   | in/out             |
- * | KBD Clock | PB0  | 5   | Mac keyboard clock |
- * | KBD data  | PB1  | 6   | Mac keyboard data  |
- * | TP1       | PB2  | 7   | Test point         |
+ * | Function   | AVR | Pin | I/O     |
+ * |------------|-----|-----|---------|
+ * | Reset      | PB5 | 1   | Pull up |
+ * | PS2 clock  | PB3 | 2   | in/out  |
+ * | PS2 data   | PB4 | 3   | in/out  |
+ * | KBD Clock  | PB0 | 5   | out     |
+ * | KBD data   | PB1 | 6   | in/out  |
+ * | Test point | PB2 | 7   | out     |
  *
  * Port B bit assignment
  *
@@ -78,6 +75,22 @@
 #define     GIMSK_INIT      0x20        // Enable pin change sensing on PB
 #define     PCMSK_INIT      0b00001000  // Enable pin change interrupt on PB3
 #define     PCINT_PB3       PCMSK_INIT  // Pin change interrupt on PB3
+
+// Timer0 initialization
+/* Using Timer0 for long time-out value measurements
+ * in the 100s of milliseconds.
+ * System clock = 8MHz
+ * Divide by Timer0 scaler by 1,024 = 7.8KHz (128uSec clock)
+ * Timer0 overflow occurs every ~33mSec
+ *
+ * 250mSec keyboard time out with a count of 7 = about 260mSec
+ *
+ */
+#define     TCCR0A_INIT     0b00000000  // Normal mode, no compare match
+#define     TCCR0B_INIT     0b00000101  // Mode-0 timer, Clk/1024
+#define     TIMSK_INIT      0b00000010  // Enable Timer0 overflow interrupt
+
+#define     KBDRD_TOV       8           // See explanation above
 
 // PS2 control line masks
 #define     PS2_CLOCK       0b00001000
@@ -189,6 +202,8 @@ void pulse_test_point(void);
 int  read_mac_interface(void);
 int  write_mac_interface(uint8_t byte);
 
+uint8_t get_global_time(void);
+
 /* Scan code translation table
  */
 uint8_t scan_code_xlate[] =
@@ -280,6 +295,9 @@ volatile uint8_t command_in = 0;
 // Keyboard status
 volatile uint8_t    kbd_lock_keys = 0;;
 
+// Global time base
+volatile uint8_t    global_counter = 0;
+
 /* ----------------------------------------------------------------------------
  * main() control functions
  *
@@ -287,6 +305,8 @@ volatile uint8_t    kbd_lock_keys = 0;;
 int main(void)
 {
     int     scan_code;
+    uint8_t wait_start_time;
+    int     code_wait_state = 0;
     uint8_t kdb_lock_state = 0;
 
     // Initialize IO devices
@@ -423,36 +443,54 @@ int main(void)
         /* Poll the Mac serial interface for incoming requests
          * and process them here
          */
-        switch ( read_mac_interface() )
+        if ( code_wait_state )
         {
-            case -1:
-                // Do nothing. No request received.
-                break;
+            scan_code = read_key();
 
-            case MAC_KBD_INQ:
-            case MAC_KBD_INST:
-
-                scan_code = read_key();
-
-                if ( scan_code != KBD_MAC_NULL )
-                    pulse_test_point();
-
+            if ( scan_code != KBD_MAC_NULL ||
+                 (get_global_time() - wait_start_time) >= KBDRD_TOV )
+            {
                 write_mac_interface((uint8_t) scan_code);
-                break;
+                code_wait_state = 0;
+            }
+        }
+        else
+        {
+            switch ( read_mac_interface() )
+            {
+                case -1:
+                    // Do nothing. No request received.
+                    break;
 
-            case MAC_KBD_MODEL:
-                // TODO: "Specification" suggest that keyboard system needs to reset itself.
-                write_mac_interface(KBD_MAC_MODEL);
-                break;
+                case MAC_KBD_INQ:
+                    pulse_test_point();
+                    code_wait_state = 1;
+                    wait_start_time = get_global_time();
+                    break;
 
-            case MAC_KBD_TEST:
-                write_mac_interface(KBD_MAC_ACK);
-                break;
+                case MAC_KBD_INST:
+                    scan_code = read_key();
+/*
+                    if ( scan_code != KBD_MAC_NULL )
+                        pulse_test_point();
+*/
+                    write_mac_interface((uint8_t) scan_code);
+                    break;
 
-            default:
-                /* TODO: Something went wrong and an identified command byte was received.
-                 */
-                break;
+                case MAC_KBD_MODEL:
+                    // TODO: "Specification" suggest that keyboard system needs to reset itself.
+                    write_mac_interface(KBD_MAC_MODEL);
+                    break;
+
+                case MAC_KBD_TEST:
+                    write_mac_interface(KBD_MAC_ACK);
+                    break;
+
+                default:
+                    /* TODO: Something went wrong and an unidentified command byte was received.
+                     */
+                    break;
+            }
         }
     }
 
@@ -487,7 +525,7 @@ void reset(void)
 void ioinit(void)
 {
     // Reconfigure system clock scaler to 8MHz
-    CLKPR = 0x80;   // change clock scaler (sec 8.12.2 p.37)
+    CLKPR = 0x80;   // change clock scaler (ATtiny85 sec 6.5.2 p.32)
     CLKPR = 0x00;
 
     // Initialize general IO PB pins
@@ -497,6 +535,12 @@ void ioinit(void)
     // Pin change interrupt setting
     GIMSK = GIMSK_INIT;
     PCMSK = PCMSK_INIT;
+
+    // Timer0 setup
+    TCNT0 = 0;
+    TCCR0A = TCCR0A_INIT;
+    TCCR0B = TCCR0B_INIT;
+    TIMSK = TIMSK_INIT;
 }
 
 /* ----------------------------------------------------------------------------
@@ -992,6 +1036,20 @@ int write_mac_interface(uint8_t byte)
 }
 
 /* ----------------------------------------------------------------------------
+ * get_global_time()
+ *
+ *  Return the value of the global timer tick counter
+ *
+ *  param:  none
+ *  return: counter value
+ *
+ */
+uint8_t get_global_time(void)
+{
+    return global_counter;
+}
+
+/* ----------------------------------------------------------------------------
  * This ISR will trigger when PB3 changes state.
  * PB3 is connected to the PS2 keyboard clock line, and PB4 to the data line.
  * ISR will check PB3 state and determine if it is '0' or '1',
@@ -1074,4 +1132,15 @@ ISR(PCINT0_vect)
                 break;
         }
     }
+}
+
+/* ----------------------------------------------------------------------------
+ * This ISR will trigger approximately every 33mSec when Timer0 overflows.
+ * The ISR increments a global 8-bit time variable that will overflow (cycle back through 00)
+ * approximately every 8.4 seconds.
+ *
+ */
+ISR(TIMER0_OVF_vect)
+{
+    global_counter++;
 }
