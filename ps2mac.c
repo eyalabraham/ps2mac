@@ -48,7 +48,6 @@
  * The main loop reads from the PS2 buffer, processes the scan codes, and stores them in
  * the output keyboard buffer.
  *
- * [Implementation sample](http://www.synack.net/~bbraun/mackbd/index.html)
  * [Mac Linux M68000](http://www.mac.linux-m68k.org/devel/plushw.php)
  *
  * TODO:
@@ -80,17 +79,17 @@
 /* Using Timer0 for long time-out value measurements
  * in the 100s of milliseconds.
  * System clock = 8MHz
- * Divide by Timer0 scaler by 1,024 = 7.8KHz (128uSec clock)
+ * Divide Timer0 scaler by 1,024 = 7.8KHz (128uSec clock)
  * Timer0 overflow occurs every ~33mSec
  *
- * 250mSec keyboard time out with a count of 7 = about 260mSec
+ * ~200mSec keyboard time out with a count of 6
  *
  */
 #define     TCCR0A_INIT     0b00000000  // Normal mode, no compare match
 #define     TCCR0B_INIT     0b00000101  // Mode-0 timer, Clk/1024
 #define     TIMSK_INIT      0b00000010  // Enable Timer0 overflow interrupt
 
-#define     KBDRD_TOV       8           // See explanation above
+#define     KBDRD_TOV       6           // See explanation above
 
 // PS2 control line masks
 #define     PS2_CLOCK       0b00001000
@@ -290,8 +289,6 @@ volatile int key_code_count = 0; //KEY_BUFF_SIZE;
 volatile int key_buffer_out = 0;
 volatile int key_buffer_in = 0;
 
-volatile uint8_t command_in = 0;
-
 // Keyboard status
 volatile uint8_t    kbd_lock_keys = 0;;
 
@@ -430,25 +427,30 @@ int main(void)
             write_key((uint8_t)scan_code);
         }
 
-        /* Update indicator LEDs if required
-         * do this only if there is no pending scan code in the buffer
+        /* Update indicator LEDs if required.
+         * Do this only if there is no pending scan code in the buffer
          * so that host-to-keyboard communication does not interfere with scan code exchange.
          */
-        if ( kdb_lock_state != kbd_lock_keys )
+        else if ( kdb_lock_state != kbd_lock_keys )
         {
             kdb_led_ctrl(kbd_lock_keys);
             kdb_lock_state = kbd_lock_keys;
         }
 
         /* Poll the Mac serial interface for incoming requests
-         * and process them here
+         * and process them here.
+         *
+         * There are two states governed by 'code_wait_state':
+         * is '1': an Inquiry command was received from the host and the keyboard controller
+         *         has~250mSec to wait for a key press before returning a code or a NULL.
+         * is '0': normal loop, waiting for a command from the host.
          */
         if ( code_wait_state )
         {
             scan_code = read_key();
 
             if ( scan_code != KBD_MAC_NULL ||
-                 (get_global_time() - wait_start_time) >= KBDRD_TOV )
+                 (uint8_t)(get_global_time() - wait_start_time) >= KBDRD_TOV )
             {
                 write_mac_interface((uint8_t) scan_code);
                 code_wait_state = 0;
@@ -456,6 +458,7 @@ int main(void)
         }
         else
         {
+            //pulse_test_point();
             switch ( read_mac_interface() )
             {
                 case -1:
@@ -463,32 +466,40 @@ int main(void)
                     break;
 
                 case MAC_KBD_INQ:
-                    pulse_test_point();
                     code_wait_state = 1;
                     wait_start_time = get_global_time();
                     break;
 
                 case MAC_KBD_INST:
                     scan_code = read_key();
-/*
-                    if ( scan_code != KBD_MAC_NULL )
-                        pulse_test_point();
-*/
                     write_mac_interface((uint8_t) scan_code);
+                    code_wait_state = 0;
                     break;
 
                 case MAC_KBD_MODEL:
-                    // TODO: "Specification" suggest that keyboard system needs to reset itself.
                     write_mac_interface(KBD_MAC_MODEL);
+                    // "Specification" suggest that keyboard system needs to reset itself.
+                    ps2_buffer_out = 0;
+                    ps2_buffer_in = 0;
+                    ps2_scan_code_count = 0;
+
+                    key_code_count = 0;
+                    key_buffer_out = 0;
+                    key_buffer_in = 0;
+
+                    kbd_lock_keys &= ~PS2_HK_CAPSLOCK;
+                    code_wait_state = 0;
                     break;
 
                 case MAC_KBD_TEST:
                     write_mac_interface(KBD_MAC_ACK);
+                    code_wait_state = 0;
                     break;
 
                 default:
                     /* TODO: Something went wrong and an unidentified command byte was received.
                      */
+                    code_wait_state = 0;
                     break;
             }
         }

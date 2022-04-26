@@ -1,6 +1,6 @@
 # PS2 keyboard to Macintosh Plus keyboard interface
 
-This program is the interface code for AVR with a PS2 keyboard. It implements a PS2 keyboard interface and a Mac Plus serial keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to make/break codes for the Mac.
+This program is the interface code for AVR with a PS2 keyboard for the [Mac Plus revival project](https://sites.google.com/site/eyalabraham/macintosh-plus-revival). It implements a PS2 keyboard interface and a Mac Plus serial keyboard interface. The code configures the keyboard, accepts scan codes, converts the AT scan codes to make/break codes for the Mac.
 
 ## Resources
 
@@ -38,14 +38,14 @@ This program is the interface code for AVR with a PS2 keyboard. It implements a 
 
 ### ATtiny85 AVR IO
 
- | Function  | AVR  | Pin | I/O                |
- |-----------|------|-----|--------------------|
- | Reset     | PB5  | 1   | Pull up            |
- | PS2 clock | PB3  | 2   | in/out             |
- | PS2 data  | PB4  | 3   | in/out             |
- | KBD Clock | PB0  | 5   | Mac keyboard clock |
- | KBD data  | PB1  | 6   | Mac keyboard data  |
- | TP1       | PB2  | 7   | Test point         |
+ | Function   | AVR | Pin | I/O     |
+ |------------|-----|-----|---------|
+ | Reset      | PB5 | 1   | Pull up |
+ | PS2 clock  | PB3 | 2   | in/out  |
+ | PS2 data   | PB4 | 3   | in/out  |
+ | KBD Clock  | PB0 | 5   | out     |
+ | KBD data   | PB1 | 6   | in/out  |
+ | Test point | PB2 | 7   | out     |
 
 ## Scan code processing
 
